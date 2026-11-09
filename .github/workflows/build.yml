@@ -1,0 +1,144 @@
+# Builds and tests the Windows exe and the Android APK in GitHub's cloud, so nothing has to be installed
+# on your own computer. Starts by itself when files are uploaded, or run it from the Actions tab.
+#
+#   tests    the game's own test suite (a stand-in for pygame; no screen needed)
+#   windows  builds UnoByStorm.exe, then RUNS it with --selftest (headless): fonts, network, a real
+#            two-player game over localhost
+#   android  builds the APK two ways (two pygame versions), then starts it in an Android emulator,
+#            5 times, alternating upright / sideways start, and screenshots every launch
+#
+# NOT RUN by me. The Android job is the fragile one; every job saves its logs as downloadable files
+# ("artifacts") so a failure can be read (or sent to me) without digging through the web page.
+name: build
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+jobs:
+  tests:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install pillow
+      - run: python tests/run_all.py
+
+  windows:
+    needs: tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install pygame pyinstaller
+      - name: Build the exe
+        shell: bash
+        run: |
+          DATA=""
+          [ -d assets ] && DATA="--add-data assets;assets"
+          pyinstaller --noconfirm --clean --onefile --windowed --name UnoByStorm $DATA main.py
+      - name: Run the exe's own self-test
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath .\dist\UnoByStorm.exe -ArgumentList "--selftest" -Wait -PassThru
+          if (Test-Path selftest_result.txt) { Get-Content selftest_result.txt } else { Write-Host "no result file was written" }
+          if ($p.ExitCode -ne 0) { Write-Host "self-test failed (exit code $($p.ExitCode))"; exit 1 }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-exe
+          path: |
+            dist/UnoByStorm.exe
+            selftest_result.txt
+
+  android:
+    needs: tests
+    runs-on: ubuntu-22.04
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: pygame-default
+            requirements: "python3,pygame"
+          - variant: pygame-2-6-1
+            requirements: "python3,pygame==2.6.1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.10" }
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: "17" }
+      - name: Free some disk space
+        run: sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost /usr/local/lib/android/sdk/ndk || true
+      - name: System packages for Buildozer
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git zip unzip autoconf libtool pkg-config zlib1g-dev \
+            libncurses5-dev libncursesw5-dev libtinfo5 cmake libffi-dev libssl-dev
+      - run: pip install buildozer "cython==0.29.33" virtualenv pillow
+      - name: python-for-android, with the pygame start-up crash fixed
+        run: |
+          git clone --depth 1 --branch master https://github.com/kivy/python-for-android.git p4a
+          python ci/patch_pygame_recipe.py p4a
+      - name: Configure this variant
+        run: |
+          sed -i 's|^requirements = .*|requirements = ${{ matrix.requirements }}|' buildozer.spec
+          sed -i 's|^# p4a.source_dir =.*|p4a.source_dir = ./p4a|' buildozer.spec
+          grep -nE '^(requirements|p4a.source_dir)' buildozer.spec
+      - name: Remember the big SDK/NDK downloads between runs
+        uses: actions/cache@v4
+        with:
+          path: ~/.buildozer/android/platform
+          key: buildozer-platform-${{ matrix.variant }}-${{ hashFiles('buildozer.spec') }}
+      - name: Build the APK
+        shell: bash
+        run: |
+          # Do not let tee hide a failed Buildozer exit code.
+          set -o pipefail
+          buildozer -v android debug 2>&1 | tee build.log
+
+          # Buildozer normally copies the final APK into bin/. If it is elsewhere,
+          # normalize it there so the artifact upload and emulator test use one path.
+          mkdir -p bin
+          APK="$(find . -type f -name '*.apk' -not -path './.git/*' -print -quit)"
+          if [ -z "$APK" ]; then
+            echo "Buildozer finished without producing an APK. APK search results:"
+            find . -type f -name '*.apk' -print || true
+            exit 1
+          fi
+          case "$APK" in
+            bin/*) ;;
+            *) cp "$APK" bin/ ;;
+          esac
+          echo "APK ready for tests:"
+          ls -lh bin/*.apk
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: build-log-${{ matrix.variant }}
+          path: build.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apk-${{ matrix.variant }}
+          path: bin/*.apk
+      - name: Allow the emulator to use hardware acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Start the APK in an emulator (upright and sideways starts)
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 30
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          script: bash ci/emulator_test.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: emulator-${{ matrix.variant }}
+          path: ci_out/
