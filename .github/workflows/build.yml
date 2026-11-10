@@ -60,11 +60,32 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # python-for-android's pygame recipe was written for pygame 2.1.0 (2021). Its build runs
+        # `setup.py build_ext` with python-for-android's own private Python, which has no Cython
+        # (the cause of the first failed run), so ci/patch_pygame_recipe.py puts Cython there.
+        # Variants differ in python-for-android version and pygame/Cython version. If one of them
+        # works, that one's APK is the one to use.
         include:
-          - variant: pygame-default
-            requirements: "python3,pygame"
-          - variant: pygame-2-6-1
+          - variant: p4a-2023-09-16          # last release that targets Python 3.10
+            p4a_ref: v2023.09.16
+            ndk: 25b
+            requirements: ""                 # "" = the recipe's own pygame (2.1.0)
+            cython: "cython<3"
+          - variant: p4a-2024-01-21          # Python 3.11
+            p4a_ref: v2024.01.21
+            ndk: 25b
+            requirements: ""
+            cython: "cython<3"
+          - variant: p4a-master              # what the pygame-APK fix was reported working on
+            p4a_ref: master
+            ndk: ""
+            requirements: ""
+            cython: "cython<3"
+          - variant: p4a-master-pygame-2-6-1 # the newer pygame; needs Cython 3
+            p4a_ref: master
+            ndk: ""
             requirements: "python3,pygame==2.6.1"
+            cython: "cython>=3.0.9,<3.1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -78,48 +99,35 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y git zip unzip autoconf libtool pkg-config zlib1g-dev \
             libncurses5-dev libncursesw5-dev libtinfo5 cmake libffi-dev libssl-dev
-      - run: pip install buildozer "cython==0.29.33" virtualenv pillow
+      - run: pip install buildozer virtualenv pillow
       - name: python-for-android, with the pygame start-up crash fixed
         run: |
-          git clone --depth 1 --branch master https://github.com/kivy/python-for-android.git p4a
-          python ci/patch_pygame_recipe.py p4a
+          git clone --depth 1 --branch ${{ matrix.p4a_ref }} https://github.com/kivy/python-for-android.git p4a
+          python ci/patch_pygame_recipe.py p4a --cython '${{ matrix.cython }}'
       - name: Configure this variant
         run: |
-          sed -i 's|^requirements = .*|requirements = ${{ matrix.requirements }}|' buildozer.spec
           sed -i 's|^# p4a.source_dir =.*|p4a.source_dir = ./p4a|' buildozer.spec
-          grep -nE '^(requirements|p4a.source_dir)' buildozer.spec
+          if [ -n "${{ matrix.ndk }}" ]; then sed -i 's|^# android.ndk =.*|android.ndk = ${{ matrix.ndk }}|' buildozer.spec; fi
+          if [ -n "${{ matrix.requirements }}" ]; then sed -i 's|^requirements = .*|requirements = ${{ matrix.requirements }}|' buildozer.spec; fi
+          grep -nE '^(requirements|p4a.source_dir|android.ndk)' buildozer.spec
       - name: Remember the big SDK/NDK downloads between runs
         uses: actions/cache@v4
         with:
           path: ~/.buildozer/android/platform
           key: buildozer-platform-${{ matrix.variant }}-${{ hashFiles('buildozer.spec') }}
       - name: Build the APK
-        shell: bash
+        run: buildozer -v android debug 2>&1 | tee build.log
+      - name: Why did the build fail?
+        if: failure()
         run: |
-          # Do not let tee hide a failed Buildozer exit code.
-          set -o pipefail
-          buildozer -v android debug 2>&1 | tee build.log
-
-          # Buildozer normally copies the final APK into bin/. If it is elsewhere,
-          # normalize it there so the artifact upload and emulator test use one path.
-          mkdir -p bin
-          APK="$(find . -type f -name '*.apk' -not -path './.git/*' -print -quit)"
-          if [ -z "$APK" ]; then
-            echo "Buildozer finished without producing an APK. APK search results:"
-            find . -type f -name '*.apk' -print || true
-            exit 1
-          fi
-          case "$APK" in
-            bin/*) ;;
-            *) cp "$APK" bin/ ;;
-          esac
-          echo "APK ready for tests:"
-          ls -lh bin/*.apk
+          { echo '### Why the build failed (${{ matrix.variant }})'; echo '```'; python ci/explain_failure.py build.log; echo '```'; } | tee build-errors.txt >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: build-log-${{ matrix.variant }}
-          path: build.log
+          path: |
+            build.log
+            build-errors.txt
       - uses: actions/upload-artifact@v4
         with:
           name: apk-${{ matrix.variant }}

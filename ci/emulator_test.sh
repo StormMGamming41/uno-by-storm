@@ -5,15 +5,9 @@
 # Saves a screenshot and the log of every launch. NOT RUN by me (it needs an emulator).
 set -u
 PKG=org.storm.unobystorm
-APK=$(find bin -maxdepth 1 -type f -name '*.apk' -print -quit 2>/dev/null)
+APK=$(ls bin/*.apk 2>/dev/null | head -n1)
 OUT=ci_out; mkdir -p "$OUT"
-[ -n "$APK" ] || {
-  echo "No APK found in bin/. Contents of bin/:"
-  ls -lah bin/ 2>&1 || true
-  echo "APK files anywhere in the workspace:"
-  find . -type f -name '*.apk' -print 2>/dev/null || true
-  exit 1
-}
+[ -n "$APK" ] || { echo "no APK in bin/"; exit 1; }
 
 adb wait-for-device
 adb shell input keyevent 82 >/dev/null 2>&1                 # wake / unlock

@@ -31,8 +31,10 @@ android.archs = arm64-v8a, x86_64
 android.minapi = 21
 android.accept_sdk_license = True
 
-# the workflow replaces this line so the patched python-for-android is used
+# the workflow replaces these lines: the patched python-for-android checkout, and (for the older
+# python-for-android releases) the NDK version they were made for
 # p4a.source_dir =
+# android.ndk =
 
 [buildozer]
 log_level = 2
