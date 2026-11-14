@@ -12,8 +12,8 @@ source.include_exts = py,png,ttf,json,md
 source.exclude_dirs = tests,bin,.buildozer,.github,ci,p4a
 version = 1.0
 
-# only pygame + the standard library. The workflow overrides this line for each variant it tries.
-requirements = python3,pygame
+# only pygame(-ce) + the standard library. The workflow sets this line from the recipe in recipes/.
+requirements = python3,pygame-ce
 
 # our own loading screen and icon (the default is a Kivy one)
 presplash.filename = %(source.dir)s/data/presplash.png
@@ -35,6 +35,7 @@ android.accept_sdk_license = True
 # python-for-android releases) the NDK version they were made for
 # p4a.source_dir =
 # android.ndk =
+# p4a.local_recipes =
 
 [buildozer]
 log_level = 2

@@ -4,8 +4,8 @@
 #   tests    the game's own test suite (a stand-in for pygame; no screen needed)
 #   windows  builds UnoByStorm.exe, then RUNS it with --selftest (headless): fonts, network, a real
 #            two-player game over localhost
-#   android  builds the APK two ways (two pygame versions), then starts it in an Android emulator,
-#            5 times, alternating upright / sideways start, and screenshots every launch
+#   android  builds the APK with pygame-ce (the recipe in recipes/, three python-for-android versions),
+#            then starts it in an Android emulator 5 times, alternating upright / sideways start, and screenshots every launch
 #
 # NOT RUN by me. The Android job is the fragile one; every job saves its logs as downloadable files
 # ("artifacts") so a failure can be read (or sent to me) without digging through the web page.
@@ -60,32 +60,18 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # python-for-android's pygame recipe was written for pygame 2.1.0 (2021). Its build runs
-        # `setup.py build_ext` with python-for-android's own private Python, which has no Cython
-        # (the cause of the first failed run), so ci/patch_pygame_recipe.py puts Cython there.
-        # Variants differ in python-for-android version and pygame/Cython version. If one of them
-        # works, that one's APK is the one to use.
+        # The recipe in recipes/pygame-ce is built against three python-for-android versions, because
+        # recipes like it were written in different eras. If one works, its APK is the one to use.
         include:
-          - variant: p4a-2023-09-16          # last release that targets Python 3.10
+          - variant: p4a-2023-09-16          # Python 3.10, the era of the Potato-Bird recipe
             p4a_ref: v2023.09.16
             ndk: 25b
-            requirements: ""                 # "" = the recipe's own pygame (2.1.0)
-            cython: "cython<3"
           - variant: p4a-2024-01-21          # Python 3.11
             p4a_ref: v2024.01.21
             ndk: 25b
-            requirements: ""
-            cython: "cython<3"
-          - variant: p4a-master              # what the pygame-APK fix was reported working on
+          - variant: p4a-master              # newest
             p4a_ref: master
             ndk: ""
-            requirements: ""
-            cython: "cython<3"
-          - variant: p4a-master-pygame-2-6-1 # the newer pygame; needs Cython 3
-            p4a_ref: master
-            ndk: ""
-            requirements: "python3,pygame==2.6.1"
-            cython: "cython>=3.0.9,<3.1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -100,16 +86,28 @@ jobs:
           sudo apt-get install -y git zip unzip autoconf libtool pkg-config zlib1g-dev \
             libncurses5-dev libncursesw5-dev libtinfo5 cmake libffi-dev libssl-dev
       - run: pip install buildozer virtualenv pillow
-      - name: python-for-android, with the pygame start-up crash fixed
+      - name: python-for-android ${{ matrix.p4a_ref }}
+        run: git clone --depth 1 --branch ${{ matrix.p4a_ref }} https://github.com/kivy/python-for-android.git p4a
+      - name: Configure the build (recipe from recipes/, python-for-android checkout, NDK)
+        # The APK is built with pygame-ce, from a python-for-android recipe kept in this repository:
+        #   recipes/<name>/__init__.py      (the recipe; <name> is what goes in `requirements`)
+        #   recipes/requirements.txt        (optional: the whole `requirements =` value, if it needs more
+        #                                    than "python3,<name>", e.g. "python3,sdl2,<name>")
         run: |
-          git clone --depth 1 --branch ${{ matrix.p4a_ref }} https://github.com/kivy/python-for-android.git p4a
-          python ci/patch_pygame_recipe.py p4a --cython '${{ matrix.cython }}'
-      - name: Configure this variant
-        run: |
+          if [ ! -d recipes ]; then
+            echo "::error::There is no recipes/ folder (it should hold the pygame-ce recipe, see README_ANDROID.md)."
+            exit 1
+          fi
+          NAME=$(ls -d recipes/*/ 2>/dev/null | xargs -n1 basename | grep -i pygame | head -n1)
+          if [ -f recipes/requirements.txt ]; then REQ=$(tr -d '\r\n' < recipes/requirements.txt)
+          elif [ -n "$NAME" ]; then REQ="python3,$NAME"
+          else echo "::error::recipes/ has no pygame folder and no requirements.txt"; exit 1; fi
+          echo "recipe folders: $(ls recipes | tr '\n' ' ')"
+          sed -i "s|^requirements = .*|requirements = $REQ|" buildozer.spec
+          sed -i 's|^# p4a.local_recipes =.*|p4a.local_recipes = ./recipes|' buildozer.spec
           sed -i 's|^# p4a.source_dir =.*|p4a.source_dir = ./p4a|' buildozer.spec
           if [ -n "${{ matrix.ndk }}" ]; then sed -i 's|^# android.ndk =.*|android.ndk = ${{ matrix.ndk }}|' buildozer.spec; fi
-          if [ -n "${{ matrix.requirements }}" ]; then sed -i 's|^requirements = .*|requirements = ${{ matrix.requirements }}|' buildozer.spec; fi
-          grep -nE '^(requirements|p4a.source_dir|android.ndk)' buildozer.spec
+          grep -nE '^(requirements|p4a.local_recipes|p4a.source_dir|android.ndk)' buildozer.spec
       - name: Remember the big SDK/NDK downloads between runs
         uses: actions/cache@v4
         with:

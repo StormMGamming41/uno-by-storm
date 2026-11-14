@@ -2,7 +2,7 @@
 import os, subprocess, sys
 here = os.path.dirname(os.path.abspath(__file__))
 names = ["test_desktop", "test_profiles", "test_touch", "test_present", "test_cards",
-         "test_clipboard", "test_check_display", "test_orientation"]
+         "test_clipboard", "test_check_display", "test_orientation", "test_recipe"]
 bad = []
 for n in names:
     p = subprocess.run([sys.executable, os.path.join(here, n + ".py")], cwd=here,
